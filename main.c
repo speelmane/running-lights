@@ -1,14 +1,14 @@
 #include "pico/time.h"
 #include "hardware/address_mapped.h"
+#include "hardware/irq.h"
 #include "hardware/regs/intctrl.h"
 #include "hardware/regs/io_bank0.h"
 #include "hardware/regs/pads_bank0.h"
 #include "hardware/regs/sio.h"
-#include "hardware/gpio.h"
 #include "hardware/uart.h"
 
 #define BIT(n)  (1u<<(n))
-#define LED_INITAL_MS 500
+#define LED_INITAL_MS 80
 #define LED_MIN_MS 50
 #define LED_MAX_MS 60000
 #define LED_CHANGE_STEP_MS 50
@@ -24,10 +24,11 @@
 #define LED_PIN_9 10
 
 #define BUTTON_PIN 16
-#define BUTTON_IRQ_TIMEOUT_MS 30
+#define BUTTON_IRQ_TIMEOUT_MS 70
 
 #define PADS_BANK0_GPIO (PADS_BANK0_BASE + PADS_BANK0_GPIO0_OFFSET)
 #define IO_BANK0_GPIO (IO_BANK0_BASE + IO_BANK0_GPIO0_CTRL_OFFSET)
+#define GPIO_FUNC_UART 2
 #define GPIO_FUNC_SIO 5
 #define GPIO_REG_SIZE sizeof(io_rw_32)
 
@@ -52,37 +53,13 @@ const uint8_t speed_decr_char = '-';
 
 /* Function prototypes */
 int64_t alarm_handler(alarm_id_t id, __unused void *user_data);
-void button_press_handler(uint gpio, __unused uint32_t events);
+void button_press_handler();
 void uart_rx_handler();
 void sys_init();
 void turn_single_led(int pin, bool on);
 void init_hw_pins();
+void init_interrupts();
 /* End of prototypes */
-
-void sys_init()
-{
-    init_hw_pins();
-
-    /* Enable interrupt on the button press */
-    gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true, &button_press_handler);
-
-    /* UART inits */
-    uart_init(UART_ID, BAUD_RATE);
-
-    gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
-    gpio_set_function(UART_RX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_RX_PIN));
-
-    uart_set_hw_flow(UART_ID, false, false);
-    uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
-
-    uart_set_fifo_enabled(UART_ID, true);
-
-    irq_set_exclusive_handler(UART0_IRQ, uart_rx_handler);
-    irq_set_enabled(UART0_IRQ, true);
-
-    /* set this to RX only */
-    uart_set_irq_enables(UART_ID, true, false);
-}
 
 int main()
 {
@@ -131,17 +108,24 @@ int main()
     return 0;
 }
 
-/* GPIO config / drive via registers instead of helper functions */
-void turn_single_led(int pin, bool on)
+void sys_init()
 {
-    if (on)
-    {
-        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_SET_OFFSET) = BIT(pin);
-    }
-    else
-    {
-        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = BIT(pin);
-    }
+    init_hw_pins();
+    init_interrupts();
+    
+    /* Basic UART inits */
+    uart_init(UART_ID, BAUD_RATE);
+
+    uart_set_hw_flow(UART_ID, false, false);
+    uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
+
+    uart_set_fifo_enabled(UART_ID, true);
+
+    irq_set_exclusive_handler(UART0_IRQ, uart_rx_handler);
+    irq_set_enabled(UART0_IRQ, true);
+
+    /* set this to RX only */
+    uart_set_irq_enables(UART_ID, true, false);
 }
 
 void init_hw_pins()
@@ -171,22 +155,49 @@ void init_hw_pins()
             PADS_BANK0_GPIO0_PUE_BITS | PADS_BANK0_GPIO0_PDE_BITS | PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_OD_BITS); 
 
     *(io_rw_32 *)(IO_BANK0_GPIO + 2 * GPIO_REG_SIZE * BUTTON_PIN) = GPIO_FUNC_SIO;
+
+    /* Initialise UART pins */
+    *(io_rw_32 *)(IO_BANK0_GPIO + 2 * GPIO_REG_SIZE * UART_TX_PIN) = GPIO_FUNC_UART;
+    *(io_rw_32 *)(IO_BANK0_GPIO + 2 * GPIO_REG_SIZE * UART_RX_PIN) = GPIO_FUNC_UART;
+}
+
+void init_interrupts()
+{
+    /* Enable button interrupt on GPIO pin 16 */
+    hw_set_bits((io_rw_32 *)(IO_BANK0_BASE + IO_BANK0_PROC0_INTE2_OFFSET), IO_BANK0_PROC0_INTE2_GPIO16_EDGE_LOW_BITS);
+    irq_set_exclusive_handler(IO_IRQ_BANK0, button_press_handler);
+    irq_set_enabled(IO_IRQ_BANK0, true);
+}
+
+/* GPIO config / drive via registers instead of helper functions */
+void turn_single_led(int pin, bool on)
+{
+    if (on)
+    {
+        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_SET_OFFSET) = BIT(pin);
+    }
+    else
+    {
+        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = BIT(pin);
+    }
 }
 
 /* Interrupt handlers */
 int64_t alarm_handler(alarm_id_t id, __unused void *user_data)
 {
-    gpio_set_irq_enabled(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true);
+    irq_set_enabled(IO_IRQ_BANK0, true);
     return 0;
 }
 
-void button_press_handler(uint gpio, __unused uint32_t events)
+void button_press_handler()
 {
+    hw_clear_bits((io_rw_32 *)(IO_BANK0_BASE + IO_BANK0_INTR2_OFFSET), IO_BANK0_INTR2_GPIO16_EDGE_LOW_BITS);
+    irq_set_enabled(IO_IRQ_BANK0, false);
+
     direction_forward = !direction_forward;
     /* Disable the button pin interrupt and wait for the alarm to set it up again after a certain timeout defined in BUTTON_IRQ_TIMEOUT_MS.
     This shall serve (in addition to hardware button debouncing) as a way to change the light direction during the sleep_ms phase for the LEDs */
     add_alarm_in_ms(BUTTON_IRQ_TIMEOUT_MS, alarm_handler, NULL, false);
-    gpio_set_irq_enabled(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, false);
 }
 
 void uart_rx_handler()
