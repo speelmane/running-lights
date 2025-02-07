@@ -1,4 +1,10 @@
-#include "pico/stdlib.h"
+#include "pico/time.h"
+#include "hardware/address_mapped.h"
+#include "hardware/regs/intctrl.h"
+#include "hardware/regs/io_bank0.h"
+#include "hardware/regs/pads_bank0.h"
+#include "hardware/regs/sio.h"
+#include "hardware/gpio.h"
 #include "hardware/uart.h"
 
 #define BIT(n)  (1u<<(n))
@@ -15,10 +21,15 @@
 #define LED_PIN_6 7 
 #define LED_PIN_7 8 
 #define LED_PIN_8 9 
-#define LED_PIN_9 10 
-#define BUTTON_PIN 16
+#define LED_PIN_9 10
 
+#define BUTTON_PIN 16
 #define BUTTON_IRQ_TIMEOUT_MS 30
+
+#define PADS_BANK0_GPIO (PADS_BANK0_BASE + PADS_BANK0_GPIO0_OFFSET)
+#define IO_BANK0_GPIO (IO_BANK0_BASE + IO_BANK0_GPIO0_CTRL_OFFSET)
+#define GPIO_FUNC_SIO 5
+#define GPIO_REG_SIZE sizeof(io_rw_32)
 
 #define UART_TX_PIN 0
 #define UART_RX_PIN 1
@@ -35,30 +46,27 @@ uint32_t led_init_bitmask = BIT(LED_PIN_1) | BIT(LED_PIN_2) | BIT(LED_PIN_3) | B
 volatile char direction_forward = true;
 volatile int32_t led_ms = LED_INITAL_MS;
 
+/* Characters used in UART to indicate speed increase or decrease */
 const uint8_t speed_incr_char = '+';
 const uint8_t speed_decr_char = '-';
 
 /* Function prototypes */
 int64_t alarm_handler(alarm_id_t id, __unused void *user_data);
-void button_callback(uint gpio, __unused uint32_t events);
+void button_press_handler(uint gpio, __unused uint32_t events);
 void uart_rx_handler();
 void sys_init();
+void turn_single_led(int pin, bool on);
+void init_hw_pins();
+/* End of prototypes */
 
 void sys_init()
 {
-    stdio_init_all();
+    init_hw_pins();
 
-    gpio_init_mask(led_init_bitmask);
-    gpio_set_dir_out_masked(led_init_bitmask);
+    /* Enable interrupt on the button press */
+    gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true, &button_press_handler);
 
-    // button initialisation with an internal pull-up resistor, the direction in gpio_init by default is GPIO_IN
-    gpio_init(BUTTON_PIN);
-    gpio_pull_up(BUTTON_PIN);
-
-    // enable interrupt on the button press
-    gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, true, &button_callback);
-
-    // UART inits
+    /* UART inits */
     uart_init(UART_ID, BAUD_RATE);
 
     gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
@@ -72,7 +80,7 @@ void sys_init()
     irq_set_exclusive_handler(UART0_IRQ, uart_rx_handler);
     irq_set_enabled(UART0_IRQ, true);
 
-    // set this to RX only
+    /* set this to RX only */
     uart_set_irq_enables(UART_ID, true, false);
 }
 
@@ -81,14 +89,14 @@ int main()
     sys_init();
 
     uint32_t led_index = 0;
-    // set the first LED to "on" since the following logic sets the next LEDs to on/off accordingly, skipping the first one
-    gpio_put(led_pins[led_index], true);
+    /* set the first LED to "on" since the following logic sets the next LEDs to on/off accordingly, skipping the first one */
+    turn_single_led(led_pins[led_index], true);
     sleep_ms(led_ms);
 
     while (true) {
 
-        // turn the current LED off, get ready for the next LED to be turned on
-        gpio_put(led_pins[led_index], false);
+        /* turn the current LED off, get ready for the next LED to be turned on */
+        turn_single_led(led_pins[led_index], false);
 
         if (direction_forward == true)
         {
@@ -116,11 +124,53 @@ int main()
         }
 
         /* Set only the LED at the specified index */
-        gpio_put(led_pins[led_index], true);
+        turn_single_led(led_pins[led_index], true);
         sleep_ms(led_ms);
     }
 
     return 0;
+}
+
+/* GPIO config / drive via registers instead of helper functions */
+void turn_single_led(int pin, bool on)
+{
+    if (on)
+    {
+        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_SET_OFFSET) = BIT(pin);
+    }
+    else
+    {
+        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = BIT(pin);
+    }
+}
+
+void init_hw_pins()
+{
+    /* Output enable for the LEDs */
+    *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OE_SET_OFFSET) = led_init_bitmask;
+    /* Drive LED output to low */
+    *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_OFFSET) = 0;
+
+    for (int pin = 0; pin < (count_of(led_pins)); pin++)
+    {
+        /* Set IO function to SIO for all output pins */
+        hw_write_masked((io_rw_32 *)(PADS_BANK0_GPIO + GPIO_REG_SIZE * led_pins[pin]),
+                   PADS_BANK0_GPIO0_IE_BITS,
+                   PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_OD_BITS
+        );
+        
+        /* Note the *2 operation which is due to the offset between the registers of 8 bytes in total */
+        *(io_rw_32 *)(IO_BANK0_GPIO + 2 * GPIO_REG_SIZE * led_pins[pin]) = GPIO_FUNC_SIO;
+    }
+
+    /* Input enable for the button */
+    *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OE_CLR_OFFSET) = BIT(BUTTON_PIN);
+    /* Pull-up resistor enable for the button, as well as input enable, final register state - ...7:0 = [...01001000] */
+    hw_write_masked((io_rw_32 *)(PADS_BANK0_GPIO + GPIO_REG_SIZE * BUTTON_PIN),
+            ((1u << PADS_BANK0_GPIO0_PUE_LSB) | 0u << PADS_BANK0_GPIO0_PDE_LSB) | PADS_BANK0_GPIO0_IE_BITS,
+            PADS_BANK0_GPIO0_PUE_BITS | PADS_BANK0_GPIO0_PDE_BITS | PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_OD_BITS); 
+
+    *(io_rw_32 *)(IO_BANK0_GPIO + 2 * GPIO_REG_SIZE * BUTTON_PIN) = GPIO_FUNC_SIO;
 }
 
 /* Interrupt handlers */
@@ -130,10 +180,10 @@ int64_t alarm_handler(alarm_id_t id, __unused void *user_data)
     return 0;
 }
 
-void button_callback(uint gpio, __unused uint32_t events)
+void button_press_handler(uint gpio, __unused uint32_t events)
 {
     direction_forward = !direction_forward;
-    /* Disable the button pin interrupt and wait for the alarm to set it up again after a certain timeout defined in BUTTON_IRQ_TIMEOUT_MS
+    /* Disable the button pin interrupt and wait for the alarm to set it up again after a certain timeout defined in BUTTON_IRQ_TIMEOUT_MS.
     This shall serve (in addition to hardware button debouncing) as a way to change the light direction during the sleep_ms phase for the LEDs */
     add_alarm_in_ms(BUTTON_IRQ_TIMEOUT_MS, alarm_handler, NULL, false);
     gpio_set_irq_enabled(BUTTON_PIN, GPIO_IRQ_EDGE_FALL, false);
