@@ -1,5 +1,8 @@
-#include "pico/stdlib.h"
-#include "hardware/regs/sio.h" 
+#include "pico/time.h"
+#include "hardware/address_mapped.h"
+#include "hardware/regs/io_bank0.h"
+#include "hardware/regs/pads_bank0.h"
+#include "hardware/regs/sio.h"
 
 #define BIT(n)  (1u<<(n))
 #define LED_MS 250
@@ -10,9 +13,6 @@
 #define IO_BANK0_GPIO (IO_BANK0_BASE + IO_BANK0_GPIO0_CTRL_OFFSET)
 #define GPIO_FUNC_SIO 5
 #define GPIO_REG_SIZE sizeof(io_rw_32)
-
-#define GPIO_IRQ_EDGE_FALL 0x4u
-
 
 uint8_t led_pins[] = {2, 3, 4, 5, 6, 7, 8, 9, 10};
 uint32_t led_init_bitmask = BIT(2) | BIT(3) | BIT(4) | BIT(5) | BIT(6) | BIT(7) | BIT(8) | BIT(9) | BIT(10);
@@ -26,7 +26,7 @@ void turn_single_led(int pin, bool on)
     }
     else
     {
-         *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = BIT(pin);
+        *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = BIT(pin);
     }
 }
 
@@ -37,12 +37,12 @@ bool button_read_high()
 
 void init_hw_pins()
 {
-    // output enable for the out pins
+    // output enable for the LEDs
     *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OE_SET_OFFSET) = led_init_bitmask;
-    // drive output to low
+    // drive LED output to low
     *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OUT_OFFSET) = 0;
 
-    for (int pin = 0; pin < (sizeof(led_pins)); pin++)
+    for (int pin = 0; pin < (count_of(led_pins)); pin++)
     {
         // set IO function to SIO for all output pins
         hw_write_masked((io_rw_32 *)(PADS_BANK0_GPIO + GPIO_REG_SIZE * led_pins[pin]),
@@ -56,7 +56,7 @@ void init_hw_pins()
     // input enable for the button
     *(io_rw_32 *)(SIO_BASE + SIO_GPIO_OE_CLR_OFFSET) = BIT(BUTTON_PIN);
     // pull-up resistor enable for the button, as well as input enable
-    // final register state - ...7:0 = [01001000]
+    // final register state - ...7:0 = [...01001000]
     hw_write_masked((io_rw_32 *)(PADS_BANK0_GPIO + GPIO_REG_SIZE * BUTTON_PIN),
             ((1u << PADS_BANK0_GPIO0_PUE_LSB) | 0u << PADS_BANK0_GPIO0_PDE_LSB) | PADS_BANK0_GPIO0_IE_BITS,
             PADS_BANK0_GPIO0_PUE_BITS | PADS_BANK0_GPIO0_PDE_BITS | PADS_BANK0_GPIO0_IE_BITS | PADS_BANK0_GPIO0_OD_BITS); 
@@ -87,7 +87,7 @@ int main()
 
         if (direction_forward == true)
         {
-            if (led_index == (sizeof(led_pins) - 1))
+            if (led_index == (count_of(led_pins) - 1))
             {
                 led_index = 0;
             }
@@ -100,7 +100,7 @@ int main()
         {
             if (led_index == 0)
             {
-                led_index = sizeof(led_pins) - 1;
+                led_index = count_of(led_pins) - 1;
             }
             else
             {
