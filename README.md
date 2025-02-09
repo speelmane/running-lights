@@ -18,7 +18,7 @@ docker build . -t pico-sdk
 ```
 Within the same cloned project directory, run the container:
 ```bash
-docker run -it --name pico-running-lights -v ${PWD}:/home/ubuntu/running-lights:rw --user ${id -u):($id -g) pico-sdk
+docker run -it --name pico-running-lights -v ${PWD}:/home/ubuntu/running-lights:rw --user $(id -u):$(id -g) pico-sdk
 ```
 
 This will bring you inside the container at `/home/ubuntu` location, to get to the running lights project run:
