@@ -7,11 +7,10 @@
 #include "hardware/regs/sio.h"
 #include "hardware/uart.h"
 
-#define BIT(n)  (1u<<(n))
-#define LED_INITAL_MS 80
-#define LED_MIN_MS 50
-#define LED_MAX_MS 60000
-#define LED_CHANGE_STEP_MS 50
+#define LED_INITAL_MS 100
+#define LED_MIN_MS 10
+#define LED_MAX_MS 1000
+#define LED_CHANGE_STEP_MS 10
 
 #define LED_PIN_1 2
 #define LED_PIN_2 3 
@@ -41,6 +40,16 @@
 #define STOP_BITS 1
 #define PARITY    UART_PARITY_NONE
 
+/* Some helpful macros */
+#define BIT(n)  (1u<<(n))
+
+/* UART debug definition, do nothing if DEBUG is not defined */
+#ifdef DEBUG
+#define DEBUG_UART(x) uart_puts(UART_ID, x);
+#else
+#define DEBUG_UART(x)
+#endif
+
 uint8_t led_pins[] = {LED_PIN_1, LED_PIN_2, LED_PIN_3, LED_PIN_4, LED_PIN_5, LED_PIN_6, LED_PIN_7, LED_PIN_8, LED_PIN_9};
 uint32_t led_init_bitmask = BIT(LED_PIN_1) | BIT(LED_PIN_2) | BIT(LED_PIN_3) | BIT(LED_PIN_4) | BIT(LED_PIN_5) | BIT(LED_PIN_6) | BIT(LED_PIN_7) | BIT(LED_PIN_8) | BIT(LED_PIN_9);
 
@@ -55,15 +64,18 @@ const uint8_t speed_decr_char = '-';
 int64_t alarm_handler(alarm_id_t id, __unused void *user_data);
 void button_press_handler();
 void uart_rx_handler();
-void sys_init();
 void turn_single_led(int pin, bool on);
 void init_hw_pins();
+void init_uart();
 void init_interrupts();
 /* End of prototypes */
 
 int main()
 {
-    sys_init();
+    init_hw_pins();
+    init_uart();
+    init_interrupts();
+    DEBUG_UART("System initialized\n");
 
     uint32_t led_index = 0;
     /* set the first LED to "on" since the following logic sets the next LEDs to on/off accordingly, skipping the first one */
@@ -108,26 +120,6 @@ int main()
     return 0;
 }
 
-void sys_init()
-{
-    init_hw_pins();
-    init_interrupts();
-    
-    /* Basic UART inits */
-    uart_init(UART_ID, BAUD_RATE);
-
-    uart_set_hw_flow(UART_ID, false, false);
-    uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
-
-    uart_set_fifo_enabled(UART_ID, true);
-
-    irq_set_exclusive_handler(UART0_IRQ, uart_rx_handler);
-    irq_set_enabled(UART0_IRQ, true);
-
-    /* set this to RX only */
-    uart_set_irq_enables(UART_ID, true, false);
-}
-
 void init_hw_pins()
 {
     /* Output enable for the LEDs */
@@ -161,12 +153,30 @@ void init_hw_pins()
     *(io_rw_32 *)(IO_BANK0_GPIO + 2 * GPIO_REG_SIZE * UART_RX_PIN) = GPIO_FUNC_UART;
 }
 
+void init_uart()
+{
+    /* Basic UART inits */
+    uart_init(UART_ID, BAUD_RATE);
+
+    uart_set_hw_flow(UART_ID, false, false);
+    uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
+
+    uart_set_fifo_enabled(UART_ID, true);
+}
+
 void init_interrupts()
 {
     /* Enable button interrupt on GPIO pin 16 */
     hw_set_bits((io_rw_32 *)(IO_BANK0_BASE + IO_BANK0_PROC0_INTE2_OFFSET), IO_BANK0_PROC0_INTE2_GPIO16_EDGE_LOW_BITS);
     irq_set_exclusive_handler(IO_IRQ_BANK0, button_press_handler);
     irq_set_enabled(IO_IRQ_BANK0, true);
+
+    /* Enable UART interrupt */
+    irq_set_exclusive_handler(UART0_IRQ, uart_rx_handler);
+    irq_set_enabled(UART0_IRQ, true);
+
+    /* set this to RX only */
+    uart_set_irq_enables(UART_ID, true, false);
 }
 
 /* GPIO config / drive via registers instead of helper functions */
@@ -211,8 +221,12 @@ void uart_rx_handler()
             if ((led_ms - LED_CHANGE_STEP_MS) > LED_MIN_MS)
             {
                 led_ms -= LED_CHANGE_STEP_MS;
-                uart_puts(UART_ID, "\nSpeed increased\n");
-
+                DEBUG_UART("Speed increased\n");
+            }
+            else
+            {
+                led_ms = LED_MIN_MS;
+                DEBUG_UART("Min LED time reached\n");
             }
         }
         else if (ch == speed_decr_char)
@@ -220,15 +234,18 @@ void uart_rx_handler()
             if ((led_ms + LED_CHANGE_STEP_MS) < LED_MAX_MS)
             {
                 led_ms += LED_CHANGE_STEP_MS;
-                uart_puts(UART_ID, "\nSpeed decreased\n");
+                DEBUG_UART("Speed decreased\n");
             }
-
+            else
+            {
+                led_ms = LED_MAX_MS;
+                DEBUG_UART("Max LED time reached\n");
+            }
         }
         else
         {
             /* Invalid character, no change*/
-            uart_puts(UART_ID, "\nInvalid character\n");
-
+            DEBUG_UART("Invalid character\n");
             continue;
         }
     }
