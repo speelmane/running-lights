@@ -28,7 +28,7 @@ target_sources(${PROJECT_NAME} PUBLIC
         ${CMAKE_CURRENT_LIST_DIR}/main.c       
         )
 # pull in common dependencies = library
-target_link_libraries(${PROJECT_NAME} pico_stdlib)
+target_link_libraries(${PROJECT_NAME} pico_time pico_platform pico_runtime hardware_uart hardware_irq)
 
 # if (PICO_CYW43_SUPPORTED)
 #     target_link_libraries(blink pico_cyw43_arch_none)
