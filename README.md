@@ -14,11 +14,11 @@ Please note that although it is also recommended to install the Picotool separat
 ### Setting up the environment with Docker
 The Docker image build should take a couple of minutes, start the build within the cloned project directory:
 ```bash
-docker build . -t pico-sdk
+docker build . --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t pico-sdk
 ```
 Within the same cloned project directory, run the container:
 ```bash
-docker run -it --name pico-running-lights -v ${PWD}:/home/ubuntu/running-lights:rw --user $(id -u):$(id -g) pico-sdk
+docker run -it --name pico-running-lights -v ${PWD}:/home/ubuntu/running-lights:rw pico-sdk
 ```
 
 This will bring you inside the container at `/home/ubuntu` location, to get to the running lights project run:
